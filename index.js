@@ -4,13 +4,13 @@ const readline = require('readline');
 const fs = require('fs');
 
 // Initialize web3 with the provided RPC URL
-const RPC_URL = "https://mainnet.base.org"; // RPC URL
-const CONTRACT_ADDRESS = "0xC5bf05cD32a14BFfb705Fb37a9d218895187376c"; // Contract address
+const RPC_URL = "https://mainnet.base.org";
+const CONTRACT_ADDRESS = "0xC5bf05cD32a14BFfb705Fb37a9d218895187376c";
 
-// Set up web3 instance using the new provider syntax
+// Set up web3 instance
 const web3 = new Web3(new Web3.providers.HttpProvider(RPC_URL));
 
-// ABI for the depositETH function (adjust according to your contract)
+// ABI for the depositETH function
 const ABI = [
   {
     "constant": false,
@@ -110,13 +110,29 @@ async function executeTransactions(privateKey, numTx, amountInEther) {
     for (let i = 0; i < numTx; i++) {
       try {
         const currentNonce = await web3.eth.getTransactionCount(fromAddress, 'pending');
+        const gasLimit = await contract.methods.depositETH().estimateGas({ from: fromAddress, value: amountInWei });
+        const gasPrice = await web3.eth.getGasPrice();
+
+        const estimatedFee = parseFloat(web3.utils.fromWei((BigInt(gasLimit) * BigInt(gasPrice)).toString(), 'ether'));
+		
+		// Format the fee to a fixed-point notation (float)
+        const formattedFee = estimatedFee.toFixed(10); // Adjust decimal places as needed
+
+        console.log(`Estimated Transaction Fee: ${formattedFee} ETH`);
+
+        if (estimatedFee >= 0.00000035) {
+          console.log(chalk.red('Transaction fee too high. Waiting for gas price to decrease...'));
+          await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15 seconds and retry
+          i--; // Retry the same transaction
+          continue;
+        }
 
         const tx = {
           from: fromAddress,
           to: CONTRACT_ADDRESS,
           value: amountInWei,
-          gas: await contract.methods.depositETH().estimateGas({ from: fromAddress, value: amountInWei }),
-          gasPrice: await web3.eth.getGasPrice(),
+          gas: gasLimit,
+          gasPrice: gasPrice,
           nonce: currentNonce,
           data: contract.methods.depositETH().encodeABI()
         };
