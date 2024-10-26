@@ -101,12 +101,10 @@ This script automates the process of performing grow actions using a GraphQL-bas
    ```json
    {
      "authToken": "your_initial_auth_token",
-     "refreshToken": "your_initial_refresh_token",
-      "apiKey": "your_api_key_here"
+     "refreshToken": "your_initial_refresh_token"
    }
    ```
    ![Screenshot 2024-10-26 200754](https://github.com/user-attachments/assets/8e7d4d49-2f29-4c3a-8bd5-70092efe5c72)
-   apikey is above this highlighted
 
 
 ## Usage
