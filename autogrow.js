@@ -263,7 +263,25 @@ async function executeGrowActions() {
     await new Promise(resolve => setTimeout(resolve, 60000*10)); // 5-second delay
   }
 }
+function printHeader() {
+  const line = "=".repeat(50);
+  const title = "Auto Grow Hanafuda";
+  const createdBy = "Bot created by: https://t.me/airdropwithmeh";
+
+  const totalWidth = 50;
+  const titlePadding = Math.floor((totalWidth - title.length) / 2);
+  const createdByPadding = Math.floor((totalWidth - createdBy.length) / 2);
+
+  const centeredTitle = title.padStart(titlePadding + title.length).padEnd(totalWidth);
+  const centeredCreatedBy = createdBy.padStart(createdByPadding + createdBy.length).padEnd(totalWidth);
+
+  console.log(chalk.cyan.bold(line));
+  console.log(chalk.cyan.bold(centeredTitle));
+  console.log(chalk.green(centeredCreatedBy));
+  console.log(chalk.cyan.bold(line));
+}
 
 // Start the infinite loop to monitor and execute grow actions
+printHeader();
 loadTokens();
 executeGrowActions();
