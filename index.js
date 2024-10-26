@@ -2,10 +2,18 @@ const Web3 = require('web3');
 const chalk = require('chalk');
 const readline = require('readline');
 const fs = require('fs');
+const axios = require('axios');
 
 // Initialize web3 with the provided RPC URL
 const RPC_URL = "https://mainnet.base.org";
 const CONTRACT_ADDRESS = "0xC5bf05cD32a14BFfb705Fb37a9d218895187376c";
+
+// File to store tokens and auth data
+const TOKEN_FILE = './tokens.json';
+
+// Constants
+const REQUEST_URL = 'https://hanafuda-backend-app-520478841386.us-central1.run.app/graphql';
+const REFRESH_URL = 'https://securetoken.googleapis.com/v1/token?key=AIzaSyDipzN0VRfTPnMGhQ5PSzO27Cxm3DohJGY';
 
 // Set up web3 instance
 const web3 = new Web3(new Web3.providers.HttpProvider(RPC_URL));
@@ -40,6 +48,117 @@ function readPrivateKeys() {
   } catch (error) {
     console.error('Error reading private keys:', error.message);
     process.exit(1);
+  }
+}
+
+// Function to read the tokens from tokens.json
+function getTokens() {
+  try {
+    const data = fs.readFileSync(TOKEN_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error('Error reading tokens:', error.message);
+    process.exit(1);
+  }
+}
+
+// Function to save updated tokens to tokens.json
+function saveTokens(tokens) {
+  try {
+    fs.writeFileSync(TOKEN_FILE, JSON.stringify(tokens, null, 2));
+    console.log(chalk.yellow('Tokens updated successfully.'));
+  } catch (error) {
+    console.error(`Error saving tokens: ${error.message}`);
+    process.exit(1);
+  }
+}
+
+// Function to refresh the token
+async function refreshTokenHandler() {
+  const tokens = getTokens();
+  console.log(chalk.yellow('Attempting to refresh token...'));
+  try {
+    const response = await axios.post(REFRESH_URL, null, {
+      params: {
+        grant_type: 'refresh_token',
+        refresh_token: tokens.refreshToken
+      }
+    });
+
+    // Update tokens with new access and refresh tokens
+    tokens.authToken = `Bearer ${response.data.access_token}`;
+    tokens.refreshToken = response.data.refresh_token;
+    saveTokens(tokens);  // Save updated tokens to file
+
+    console.log(chalk.green('Token refreshed and saved successfully.'));
+    return tokens.authToken;
+  } catch (error) {
+    console.error(`Failed to refresh token: ${error.message}`);
+    return false;
+  }
+}
+
+// Sync transaction with backend with retry mechanism
+async function syncTransaction(txHash) {
+  let tokens = getTokens();          // Fetch tokens from tokens.json
+  const maxRetries = 4;              // Maximum number of retries
+  const retryDelay = 5000;           // Delay between retries in milliseconds
+  let authToken = tokens.authToken;  // Set initial authToken
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await axios.post(
+        REQUEST_URL,
+        {
+          query: `
+            mutation SyncEthereumTx($chainId: Int!, $txHash: String!) {
+              syncEthereumTx(chainId: $chainId, txHash: $txHash)
+            }`,
+          variables: {
+            chainId: 8453,  // Adjust based on your specific chain ID
+            txHash: txHash
+          },
+          operationName: "SyncEthereumTx"
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authToken  // Include the authToken in headers
+          }
+        }
+      );
+
+      // Check if syncEthereumTx is true and break the loop if successful
+      if (response.data && response.data.data && response.data.data.syncEthereumTx) {
+        console.log(chalk.green(`Transaction ${txHash} successfully synced with backend.`));
+        break;  // Exit the retry loop if sync is successful
+      } else {
+        throw new Error(`Sync response is null or unsuccessful.`);
+      }
+
+    } catch (error) {
+      console.error(`Attempt ${attempt} - Error syncing transaction ${txHash}:`, error.message);
+
+      // Refresh token on the third attempt
+      if (attempt === 3) {
+        console.log(chalk.yellow('Attempting to refresh token on the third try...'));
+        
+        const refreshedToken = await refreshTokenHandler();  // Refresh token
+        if (refreshedToken) {
+          authToken = refreshedToken;  // Update local authToken
+          console.log(chalk.green('Token refreshed successfully. Retrying request with new token...'));
+          attempt--;  // Decrement attempt to retry with the refreshed token
+          continue; // Retry with the refreshed token immediately
+        } else {
+          console.error(chalk.red('Token refresh failed. Cannot retry further.'));
+          break;
+        }
+      }
+
+      // If not the last attempt, retry after a delay
+      console.log(`Retrying in ${retryDelay / 1000} seconds...`);
+      await new Promise(resolve => setTimeout(resolve, retryDelay));  // Wait before retrying
+    }
   }
 }
 
@@ -113,20 +232,6 @@ async function executeTransactions(privateKey, numTx, amountInEther) {
         const gasLimit = await contract.methods.depositETH().estimateGas({ from: fromAddress, value: amountInWei });
         const gasPrice = await web3.eth.getGasPrice();
 
-        const estimatedFee = parseFloat(web3.utils.fromWei((BigInt(gasLimit) * BigInt(gasPrice)).toString(), 'ether'));
-		
-		// Format the fee to a fixed-point notation (float)
-        const formattedFee = estimatedFee.toFixed(10); // Adjust decimal places as needed
-
-        console.log(`Estimated Transaction Fee: ${formattedFee} ETH`);
-
-        if (estimatedFee >= 0.00000035) {
-          console.log(chalk.red('Transaction fee too high. Waiting for gas price to decrease...'));
-          await new Promise(resolve => setTimeout(resolve, 15000)); // Wait 15 seconds and retry
-          i--; // Retry the same transaction
-          continue;
-        }
-
         const tx = {
           from: fromAddress,
           to: CONTRACT_ADDRESS,
@@ -141,6 +246,10 @@ async function executeTransactions(privateKey, numTx, amountInEther) {
         const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
 
         console.log(`Transaction ${i + 1} successful with hash: ${receipt.transactionHash}`);
+        
+        // Sync transaction with backend
+        await syncTransaction(receipt.transactionHash);
+
       } catch (txError) {
         console.error(`Error in transaction ${i + 1}:`, txError.message);
         console.log(`Retrying transaction ${i + 1}...`);
