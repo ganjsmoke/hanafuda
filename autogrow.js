@@ -3,33 +3,49 @@ const chalk = require('chalk');
 const fs = require('fs');
 
 // File to store tokens
-const TOKEN_FILE = './tokens.json';
+const TOKEN_FILE = './tokensgrow.json';
 
 // Constants
 const REQUEST_URL = 'https://hanafuda-backend-app-520478841386.us-central1.run.app/graphql';
 const REFRESH_URL = 'https://securetoken.googleapis.com/v1/token?key=AIzaSyDipzN0VRfTPnMGhQ5PSzO27Cxm3DohJGY';
 
-// Initialize tokens
-let authToken = '';
-let refreshToken = '';
+// Store for multiple accounts
+let accounts = [];
 
-// Load tokens from file or set default values
+// Load tokens from file
 function loadTokens() {
   if (fs.existsSync(TOKEN_FILE)) {
-    const data = fs.readFileSync(TOKEN_FILE);
-    const tokens = JSON.parse(data);
-    authToken = tokens.authToken;
-    refreshToken = tokens.refreshToken;
-    printMessage('Tokens loaded from file', 'info');
+    try {
+      const data = fs.readFileSync(TOKEN_FILE);
+      const tokensData = JSON.parse(data);
+      
+      if (tokensData.refreshToken) {
+        accounts = [{
+          refreshToken: tokensData.refreshToken,
+          authToken: tokensData.authToken
+        }];
+      } else {
+        accounts = Object.values(tokensData);
+      }
+      
+      printMessage(`Loaded ${accounts.length} accounts from file`, 'info');
+    } catch (error) {
+      printMessage(`Error loading tokens: ${error.message}`, 'error');
+      process.exit(1);
+    }
   } else {
     printMessage('Token file not found, please initialize tokens.', 'error');
+    process.exit(1);
   }
 }
 
 // Save tokens to file
 function saveTokens() {
-  const tokens = { authToken, refreshToken };
-  fs.writeFileSync(TOKEN_FILE, JSON.stringify(tokens, null, 2));
+  const tokensData = {};
+  accounts.forEach(account => {
+    tokensData[account.refreshToken] = account;
+  });
+  fs.writeFileSync(TOKEN_FILE, JSON.stringify(tokensData, null, 2));
   printMessage('Tokens saved to file', 'success');
 }
 
@@ -64,208 +80,233 @@ const currentUserPayload = {
   query: `query CurrentUser {
     currentUser {
       id
-      sub
       name
-      iconPath
-      depositCount
-      totalPoint
-      evmAddress {
-        userId
-        address
-      }
       inviter {
         id
-        name
       }
     }
   }`
 };
 
-// Function to get the current user's name and validate inviterId
-async function getCurrentUserName() {
+// Function to check inviter ID
+async function getInviterID(account) {
   try {
-    printMessage('Fetching current user data...', 'info');
+    printMessage(`Fetching current user data...`, 'info');
 
     const response = await axios.post(REQUEST_URL, currentUserPayload, {
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': authToken,
+        'Authorization': account.authToken,
       }
     });
 
-    const currentUser = response.data?.data?.currentUser;
-    const userName = currentUser?.name;
-	const inviterId = currentUser?.inviter?.id;
+    const inviterID = response.data?.data?.currentUser?.inviter?.id;
+    if (inviterID) {
+      account.inviterID = inviterID; // Store inviterID in account object
 
-    // Check if inviterId is 11210
-    if (inviterId !== '11210') {
-      printMessage('You didnt use my reffs :(', 'error');
-      process.exit(1); // Exit the script if inviterId is not 11210
+      if (inviterID !== 11210) {
+        printMessage("You didn't use my referral; I'm so sad 😢. t.me/airdropwithmeh.", 'error');
+        process.exit(1); // Stop the bot
+      }
+
+      return inviterID;
+    } else {
+      throw new Error('Inviter ID not found in response');
     }
+  } catch (error) {
+    printMessage(`${account.refreshToken} Error fetching current user data: ${error.message}`, 'error');
+    return null;
+  }
+}
 
+// Function to refresh token for a specific account
+async function refreshTokenHandler(account) {
+  printMessage(`${account.userName || 'User'} Attempting to refresh token...`, 'info');
+  try {
+    const response = await axios.post(REFRESH_URL, null, {
+      params: {
+        grant_type: 'refresh_token',
+        refresh_token: account.refreshToken
+      }
+    });
+
+    account.authToken = `Bearer ${response.data.access_token}`;
+    account.refreshToken = response.data.refresh_token;
+    saveTokens();
+    printMessage(`${account.userName || 'User'} Token refreshed and saved successfully`, 'success');
+    return true;
+  } catch (error) {
+    printMessage(`${account.userName || 'User'} Failed to refresh token: ${error.message}`, 'error');
+    return false;
+  }
+}
+
+async function getCurrentUserName(account) {
+  try {
+    printMessage(`${account.refreshToken} Fetching current user data...`, 'info');
+
+    const response = await axios.post(REQUEST_URL, currentUserPayload, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': account.authToken,
+      }
+    });
+
+    const userName = response.data?.data?.currentUser?.name;
     if (userName) {
+      account.userName = userName; // Store username in account object
       return userName;
     } else {
       throw new Error('User name not found in response');
     }
   } catch (error) {
-    printMessage(`Error fetching current user data: ${error.message}`, 'error');
+    printMessage(`${account.refreshToken} Error fetching current user data: ${error.message}`, 'error');
     return null;
   }
 }
 
-// Helper function to print messages
-function printMessage(message, type = 'info') {
-  if (type === 'success') {
-    console.log(chalk.green.bold(`✔️  ${message}`));
-  } else if (type === 'error') {
-    console.log(chalk.red.bold(`❌  ${message}`));
-  } else {
-    console.log(chalk.cyan(`ℹ️  ${message}`));
-  }
-}
-
-// Function to refresh the token
-async function refreshTokenHandler() {
-  printMessage('Attempting to refresh token...', 'info');
+async function getLoopCount(account, retryOnFailure = true) {
   try {
-    const response = await axios.post(REFRESH_URL, null, {
-      params: {
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken
-      }
-    });
-
-    authToken = `Bearer ${response.data.access_token}`;
-    refreshToken = response.data.refresh_token;
-    saveTokens();  // Save updated tokens to file
-    printMessage('Token refreshed and saved successfully', 'success');
-    return true;
-  } catch (error) {
-    printMessage(`Failed to refresh token: ${error.message}`, 'error');
-    return false;
-  }
-}
-
-// Function to get loop count (growActionCount) from the GetGardenForCurrentUser query
-async function getLoopCount(retryOnFailure = true) {
-  try {
-    printMessage('Checking Grow Available...', 'info');
+    printMessage(`${account.userName || 'User'} Checking Grow Available...`, 'info');
 
     const response = await axios.post(REQUEST_URL, getGardenPayload, {
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': authToken,
+        'Authorization': account.authToken,
       }
     });
 
     const growActionCount = response.data?.data?.getGardenForCurrentUser?.gardenStatus?.growActionCount;
     if (typeof growActionCount === 'number') {
-      printMessage(`Grow Available: ${growActionCount}`, 'success');
+      printMessage(`${account.userName || 'User'} Grow Available: ${growActionCount}`, 'success');
       return growActionCount;
     } else {
       throw new Error('growActionCount not found in response');
     }
   } catch (error) {
-    printMessage(`Token Expired!`, 'error');
+    printMessage(`${account.userName || 'User'} Token Expired!`, 'error');
 
-    // Attempt to refresh the token and retry
     if (retryOnFailure) {
-      const tokenRefreshed = await refreshTokenHandler();
+      const tokenRefreshed = await refreshTokenHandler(account);
       if (tokenRefreshed) {
-        return getLoopCount(false); // Retry with the new token, but don't retry infinitely
+        return getLoopCount(account, false);
       }
     }
     return 0;
   }
 }
 
-// Function to execute the grow action
-async function initiateGrowAction() {
+async function initiateGrowAction(account) {
   try {
-    printMessage('Initiating Grow...', 'info');
-	
+    printMessage(`${account.userName || 'User'} Initiating Grow...`, 'info');
+    
     const response = await axios.post(REQUEST_URL, initiatePayload, {
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': authToken,
+        'Authorization': account.authToken,
       }
     });
-	const userName = await getCurrentUserName(); // Get the current user's name
-	
+
     const result = response.data;
     if (result.data && result.data.issueGrowAction) {
-      printMessage(`Grow ${userName} Success, Pts: ${result.data.issueGrowAction}`, 'success');
+      printMessage(`${account.userName || 'User'} Grow Success, Points: ${result.data.issueGrowAction}`, 'success');
       return result.data.issueGrowAction;
     } else {
-      printMessage('Grow Failed', 'error');
+      printMessage(`${account.userName || 'User'} Grow Failed`, 'error');
       return 0;
     }
   } catch (error) {
-    printMessage(`Error executing grow: ${error.message}`, 'error');
+    printMessage(`${account.userName || 'User'} Error executing grow: ${error.message}`, 'error');
     return 0;
   }
 }
 
-// Function to commit the grow action
-async function commitGrowAction() {
+async function commitGrowAction(account) {
   try {
-    printMessage('Committing Grow...', 'info');
+    printMessage(`${account.userName || 'User'} Committing Grow...`, 'info');
 
     const response = await axios.post(REQUEST_URL, commitPayload, {
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': authToken,
+        'Authorization': account.authToken,
       }
     });
 
     const result = response.data;
     if (result.data && result.data.commitGrowAction) {
-      printMessage('Commit Success', 'success');
+      printMessage(`${account.userName || 'User'} Commit Success`, 'success');
       return result.data.commitGrowAction;
     } else {
-      printMessage('Commit Failed', 'error');
+      printMessage(`${account.userName || 'User'} Commit Failed`, 'error');
       return false;
     }
   } catch (error) {
-    printMessage(`Error committing grow: ${error.message}`, 'error');
+    printMessage(`${account.userName || 'User'} Error committing grow: ${error.message}`, 'error');
     return false;
   }
 }
 
-// Main function to continuously check and execute grow actions
-async function executeGrowActions() {
-  while (true) {
-    const loopCount = await getLoopCount();
+async function processAccount(account) {
+  // Fetch or check inviter ID
+  await getInviterID(account);
 
-    if (loopCount > 0) {
-      let totalResult = 0;
+  // Get or refresh username
+  await getCurrentUserName(account);
 
-      for (let i = 0; i < loopCount; i++) {
-        printMessage(`Starting Grow ${i + 1}/${loopCount}`, 'info');
-        const initiateResult = await initiateGrowAction();
-        totalResult += initiateResult;
+  const loopCount = await getLoopCount(account);
+  if (loopCount > 0) {
+    let totalResult = 0;
 
-        const commitResult = await commitGrowAction();
-        if (commitResult) {
-          printMessage(`Commit Grow ${i + 1} was successful.`, 'success');
-        } else {
-          printMessage(`Commit Grow ${i + 1} failed.`, 'error');
-        }
+    for (let i = 0; i < loopCount; i++) {
+      printMessage(`${account.userName || 'User'} Starting Grow ${i + 1}/${loopCount}`, 'info');
+      const initiateResult = await initiateGrowAction(account);
+      totalResult += initiateResult;
+
+      const commitResult = await commitGrowAction(account);
+      if (commitResult) {
+        printMessage(`${account.userName || 'User'} Commit Grow ${i + 1} was successful.`, 'success');
+      } else {
+        printMessage(`${account.userName || 'User'} Commit Grow ${i + 1} failed.`, 'error');
       }
-
-      printMessage(`All grow actions completed. Total Result: ${totalResult}`, 'success');
-    } else {
-      printMessage('No grow actions available. Checking again in 10 minutes..', 'info');
     }
 
-    // Delay before the next check
-    await new Promise(resolve => setTimeout(resolve, 60000*10)); // 5-second delay
+    printMessage(`${account.userName || 'User'} All grow actions completed. Total Result: ${totalResult}`, 'success');
+  } else {
+    printMessage(`${account.userName || 'User'} No grow actions available.`, 'info');
   }
 }
+
+async function executeGrowActions() {
+  while (true) {
+    printMessage('Starting new round of grow actions for all accounts...', 'info');
+    
+    for (let account of accounts) {
+      await processAccount(account);
+    }
+
+    printMessage('All accounts processed. Waiting 10 minutes before next round...', 'info');
+    await new Promise(resolve => setTimeout(resolve, 60000 * 10)); // 10-minute delay
+  }
+}
+
+function printMessage(message, type = 'info') {
+  const timestamp = new Date().toLocaleTimeString();
+  let formattedMessage;
+
+  if (type === 'success') {
+    formattedMessage = chalk.green.bold(`[${timestamp}] SUCCESS: ${message}`);
+  } else if (type === 'error') {
+    formattedMessage = chalk.red.bold(`[${timestamp}] ERROR: ${message}`);
+  } else {
+    formattedMessage = chalk.cyan(`[${timestamp}] INFO: ${message}`);
+  }
+
+  console.log(formattedMessage);
+}
+
 function printHeader() {
   const line = "=".repeat(50);
-  const title = "Auto Grow Hanafuda";
+  const title = "Multi-Account Auto Grow Hanafuda";
   const createdBy = "Bot created by: https://t.me/airdropwithmeh";
 
   const totalWidth = 50;
@@ -281,7 +322,7 @@ function printHeader() {
   console.log(chalk.cyan.bold(line));
 }
 
-// Start the infinite loop to monitor and execute grow actions
+// Start the program
 printHeader();
 loadTokens();
 executeGrowActions();
