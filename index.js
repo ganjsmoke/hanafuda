@@ -14,6 +14,7 @@ const TOKEN_FILE = './tokens.json';
 // Constants
 const REQUEST_URL = 'https://hanafuda-backend-app-520478841386.us-central1.run.app/graphql';
 const REFRESH_URL = 'https://securetoken.googleapis.com/v1/token?key=AIzaSyDipzN0VRfTPnMGhQ5PSzO27Cxm3DohJGY';
+const FEE_THRESHOLD = 0.00000030;  // Threshold in ETH
 
 // Set up web3 instance
 const web3 = new Web3(new Web3.providers.HttpProvider(RPC_URL));
@@ -162,7 +163,85 @@ async function syncTransaction(txHash) {
   }
 }
 
-// Main function
+// Waits until the transaction fee is below the defined threshold in Ether
+async function waitForLowerFee(gasLimit) {
+  let gasPrice, txnFeeInEther;
+  do {
+    gasPrice = await web3.eth.getGasPrice();
+    const txnFee = gasPrice * gasLimit;  // Transaction fee in Wei
+    txnFeeInEther = web3.utils.fromWei(txnFee.toString(), 'ether');  // Convert txn fee to Ether
+
+    if (parseFloat(txnFeeInEther) > FEE_THRESHOLD) {
+      console.log(`Current transaction fee: ${txnFeeInEther} ETH, waiting...`);
+      await new Promise(resolve => setTimeout(resolve, 5000));  // Wait 5 seconds before checking again
+    }
+  } while (parseFloat(txnFeeInEther) > FEE_THRESHOLD);
+
+  console.log(`Acceptable transaction fee detected: ${txnFeeInEther} ETH`);
+  return gasPrice;  // Return acceptable gas price
+}
+
+// Execute transactions for all wallets
+async function executeTransactionsForAllWallets(privateKeys, numTx, amountInEther) {
+  for (const privateKey of privateKeys) {
+    const account = web3.eth.accounts.privateKeyToAccount(privateKey);
+    const address = account.address;
+
+    console.log(chalk.blue(`Processing transactions for wallet: ${address}`));
+    await executeTransactions(privateKey, numTx, amountInEther);
+  }
+  console.log('All wallets processed.');
+}
+
+// Function to execute transactions for a single wallet
+async function executeTransactions(privateKey, numTx, amountInEther) {
+  try {
+    const amountInWei = web3.utils.toWei(amountInEther, 'ether');
+    const account = web3.eth.accounts.privateKeyToAccount(privateKey);
+    web3.eth.accounts.wallet.add(account);
+    const fromAddress = account.address;
+
+    for (let i = 0; i < numTx; i++) {
+      try {
+        const currentNonce = await web3.eth.getTransactionCount(fromAddress, 'pending');
+        const gasLimit = await contract.methods.depositETH().estimateGas({ from: fromAddress, value: amountInWei });
+
+        // Wait until transaction fee is below the threshold before proceeding
+        const gasPrice = await waitForLowerFee(gasLimit);
+
+        const tx = {
+          from: fromAddress,
+          to: CONTRACT_ADDRESS,
+          value: amountInWei,
+          gas: gasLimit,
+          gasPrice: gasPrice,
+          nonce: currentNonce,
+          data: contract.methods.depositETH().encodeABI()
+        };
+
+        const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+        console.log(`Transaction ${i + 1} successful with hash: ${receipt.transactionHash}`);
+
+        // Sync transaction with backend
+        await syncTransaction(receipt.transactionHash);
+
+      } catch (txError) {
+        console.error(`Error in transaction ${i + 1}:`, txError.message);
+        console.log(`Retrying transaction ${i + 1}...`);
+        i--;
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+    }
+
+    console.log(`Transactions for wallet ${fromAddress} completed.`);
+  } catch (error) {
+    console.error(`Error executing transactions for wallet: ${error.message}`);
+  }
+}
+
+// Main function and other code remains the same
 async function main() {
   try {
     const privateKeys = readPrivateKeys();
@@ -206,64 +285,7 @@ async function main() {
   }
 }
 
-// Execute transactions for all wallets
-async function executeTransactionsForAllWallets(privateKeys, numTx, amountInEther) {
-  for (const privateKey of privateKeys) {
-    const account = web3.eth.accounts.privateKeyToAccount(privateKey);
-    const address = account.address;
-
-    console.log(chalk.blue(`Processing transactions for wallet: ${address}`));
-    await executeTransactions(privateKey, numTx, amountInEther);
-  }
-  console.log('All wallets processed.');
-}
-
-// Function to execute transactions for a single wallet
-async function executeTransactions(privateKey, numTx, amountInEther) {
-  try {
-    const amountInWei = web3.utils.toWei(amountInEther, 'ether');
-    const account = web3.eth.accounts.privateKeyToAccount(privateKey);
-    web3.eth.accounts.wallet.add(account);
-    const fromAddress = account.address;
-
-    for (let i = 0; i < numTx; i++) {
-      try {
-        const currentNonce = await web3.eth.getTransactionCount(fromAddress, 'pending');
-        const gasLimit = await contract.methods.depositETH().estimateGas({ from: fromAddress, value: amountInWei });
-        const gasPrice = await web3.eth.getGasPrice();
-
-        const tx = {
-          from: fromAddress,
-          to: CONTRACT_ADDRESS,
-          value: amountInWei,
-          gas: gasLimit,
-          gasPrice: gasPrice,
-          nonce: currentNonce,
-          data: contract.methods.depositETH().encodeABI()
-        };
-
-        const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
-        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-
-        console.log(`Transaction ${i + 1} successful with hash: ${receipt.transactionHash}`);
-        
-        // Sync transaction with backend
-        await syncTransaction(receipt.transactionHash);
-
-      } catch (txError) {
-        console.error(`Error in transaction ${i + 1}:`, txError.message);
-        console.log(`Retrying transaction ${i + 1}...`);
-        i--;
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      }
-    }
-
-    console.log(`Transactions for wallet ${fromAddress} completed.`);
-  } catch (error) {
-    console.error(`Error executing transactions for wallet: ${error.message}`);
-  }
-}
-
+// Header for display
 function printHeader() {
   const line = "=".repeat(50);
   const title = "Auto Deposit Hanafuda";
