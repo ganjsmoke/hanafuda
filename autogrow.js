@@ -2,6 +2,9 @@ const axios = require('axios');
 const chalk = require('chalk');
 const fs = require('fs');
 
+// Toggle for 'withAll': set to true for single execution, false for loop through growActionCount
+const withAll = false; // Set to true for one-time execution, false for looping through growActionCount
+
 // File to store tokens
 const TOKEN_FILE = './tokensgrow.json';
 
@@ -61,18 +64,19 @@ const getGardenPayload = {
   }`
 };
 
-const initiatePayload = {
-  operationName: "issueGrowAction",
-  query: `mutation issueGrowAction {
-    issueGrowAction
-  }`
-};
-
-const commitPayload = {
-  operationName: "commitGrowAction",
-  query: `mutation commitGrowAction {
-    commitGrowAction
-  }`
+const executeGrowActionPayload = {
+  operationName: "ExecuteGrowAction",
+  query: `mutation ExecuteGrowAction($withAll: Boolean) {
+    executeGrowAction(withAll: $withAll) {
+      baseValue
+      leveragedValue
+      totalValue
+      multiplyRate
+    }
+  }`,
+  variables: {
+    withAll: withAll // Use the global toggle here
+  }
 };
 
 const currentUserPayload = {
@@ -162,79 +166,68 @@ async function getLoopCount(account, retryOnFailure = true) {
   }
 }
 
-async function initiateGrowAction(account) {
-  try {
-    printMessage(`${account.userName || 'User'} Initiating Grow...`, 'info');
-    
-    const response = await axios.post(REQUEST_URL, initiatePayload, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': account.authToken,
-      }
-    });
-
-    const result = response.data;
-    if (result.data && result.data.issueGrowAction) {
-      printMessage(`${account.userName || 'User'} Grow Success, Points: ${result.data.issueGrowAction}`, 'success');
-      return result.data.issueGrowAction;
-    } else {
-      printMessage(`${account.userName || 'User'} Grow Failed`, 'error');
-      return 0;
-    }
-  } catch (error) {
-    printMessage(`${account.userName || 'User'} Error executing grow: ${error.message}`, 'error');
-    return 0;
-  }
-}
-
-async function commitGrowAction(account) {
-  try {
-    printMessage(`${account.userName || 'User'} Committing Grow...`, 'info');
-
-    const response = await axios.post(REQUEST_URL, commitPayload, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': account.authToken,
-      }
-    });
-
-    const result = response.data;
-    if (result.data && result.data.commitGrowAction) {
-      printMessage(`${account.userName || 'User'} Commit Success`, 'success');
-      return result.data.commitGrowAction;
-    } else {
-      printMessage(`${account.userName || 'User'} Commit Failed`, 'error');
-      return false;
-    }
-  } catch (error) {
-    printMessage(`${account.userName || 'User'} Error committing grow: ${error.message}`, 'error');
-    return false;
-  }
-}
-
 async function processAccount(account) {
   await getCurrentUserName(account);
   
-  const loopCount = await getLoopCount(account);
-  if (loopCount > 0) {
-    let totalResult = 0;
+  const growActionCount = await getLoopCount(account);
 
-    for (let i = 0; i < loopCount; i++) {
-      printMessage(`${account.userName || 'User'} Starting Grow ${i + 1}/${loopCount}`, 'info');
-      const initiateResult = await initiateGrowAction(account);
-      totalResult += initiateResult;
+  // Skip if growActionCount is 0
+  if (growActionCount === 0) {
+    printMessage(`${account.userName || 'User'} No grow actions available, skipping account.`, 'info');
+    return; // Skip this account
+  }
 
-      const commitResult = await commitGrowAction(account);
-      if (commitResult) {
-        printMessage(`${account.userName || 'User'} Commit Grow ${i + 1} was successful.`, 'success');
+  // If withAll is true, execute the Grow Action once, else loop through growActionCount
+  if (withAll) {
+    printMessage(`${account.userName || 'User'} Executing Grow Action once...`, 'info');
+    
+    try {
+      const response = await axios.post(REQUEST_URL, executeGrowActionPayload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': account.authToken,
+        }
+      });
+
+      const result = response.data?.data?.executeGrowAction;
+      if (result) {
+        printMessage(`${account.userName || 'User'} Successfully executed the Grow Action:`, 'success');
+        printMessage(`  Base Value: ${result.baseValue}`, 'success');
+        printMessage(`  Leveraged Value: ${result.leveragedValue}`, 'success');
+        printMessage(`  Total Value: ${result.totalValue}`, 'success');
+        printMessage(`  Multiply Rate: ${result.multiplyRate}`, 'success');
       } else {
-        printMessage(`${account.userName || 'User'} Commit Grow ${i + 1} failed.`, 'error');
+        printMessage(`${account.userName || 'User'} Failed to execute grow action`, 'error');
+      }
+    } catch (error) {
+      printMessage(`${account.userName || 'User'} Error executing additional grow action: ${error.message}`, 'error');
+    }
+  } else {
+    printMessage(`${account.userName || 'User'} Grow action count is greater than 300. Looping through grow actions...`, 'info');
+    for (let i = 0; i < growActionCount; i++) {
+      printMessage(`${account.userName || 'User'} Executing Grow Action ${i + 1}/${growActionCount}`, 'info');
+      try {
+        const response = await axios.post(REQUEST_URL, executeGrowActionPayload, {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': account.authToken,
+          }
+        });
+
+        const result = response.data?.data?.executeGrowAction;
+        if (result) {
+          printMessage(`${account.userName || 'User'} Grow Action ${i + 1} executed successfully:`, 'success');
+          printMessage(`  Base Value: ${result.baseValue}`, 'success');
+          printMessage(`  Leveraged Value: ${result.leveragedValue}`, 'success');
+          printMessage(`  Total Value: ${result.totalValue}`, 'success');
+          printMessage(`  Multiply Rate: ${result.multiplyRate}`, 'success');
+        } else {
+          printMessage(`${account.userName || 'User'} Failed to execute grow action ${i + 1}`, 'error');
+        }
+      } catch (error) {
+        printMessage(`${account.userName || 'User'} Error executing grow action ${i + 1}: ${error.message}`, 'error');
       }
     }
-
-    printMessage(`${account.userName || 'User'} All grow actions completed. Total Result: ${totalResult}`, 'success');
-  } else {
-    printMessage(`${account.userName || 'User'} No grow actions available.`, 'info');
   }
 }
 
@@ -246,8 +239,8 @@ async function executeGrowActions() {
       await processAccount(account);
     }
 
-    printMessage('All accounts processed. Waiting 1 minutes before next round...', 'info');
-    await new Promise(resolve => setTimeout(resolve, 60000 * 1)); // 10-minute delay
+    printMessage('All accounts processed. Waiting 1 minute before next round...', 'info');
+    await new Promise(resolve => setTimeout(resolve, 60000 * 5)); // 1-minute delay
   }
 }
 
