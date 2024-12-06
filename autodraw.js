@@ -2,275 +2,149 @@ const axios = require('axios');
 const fs = require('fs');
 const chalk = require('chalk');
 
-// File and URL Constants
+// Constants
 const ACCOUNT_FILE = 'tokensgrow.json';
-const REFRESH_URL = 'https://securetoken.googleapis.com/v1/token?key=AIzaSyDipzN0VRfTPnMGhQ5PSzO27Cxm3DohJGY';
 const REQUEST_URL = 'https://hanafuda-backend-app-520478841386.us-central1.run.app/graphql';
-
-// User-Agent string
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
-// Function to display colored messages with timestamp
+// Function to display messages
 function printMessage(message, type = 'info') {
+  const timestamp = new Date().toISOString();
   if (type === 'success') {
-    console.log(chalk.green.bold(`✔️  ${message}`));
+    console.log(chalk.green.bold(`[${timestamp}] ✔️  ${message}`));
   } else if (type === 'error') {
-    console.log(chalk.red.bold(`❌  ${message}`));
+    console.log(chalk.red.bold(`[${timestamp}] ❌  ${message}`));
   } else {
-    console.log(chalk.cyan(`ℹ️  ${message}`));
+    console.log(chalk.cyan(`[${timestamp}] ℹ️  ${message}`));
   }
 }
 
-// Load accounts from the autogrows.json file
+// Load accounts from the JSON file
 function loadAccounts() {
   if (fs.existsSync(ACCOUNT_FILE)) {
-    const data = fs.readFileSync(ACCOUNT_FILE, 'utf8');
-    return JSON.parse(data);
+    try {
+      const data = fs.readFileSync(ACCOUNT_FILE, 'utf8');
+      return JSON.parse(data);
+    } catch (error) {
+      printMessage('Error reading or parsing account file. Please check the file format.', 'error');
+      throw error;
+    }
   } else {
     printMessage('Account file not found.', 'error');
-    return {};
+    throw new Error('Account file not found');
   }
 }
 
-// Save updated accounts to the JSON file
-function saveAccounts(accounts) {
-  fs.writeFileSync(ACCOUNT_FILE, JSON.stringify(accounts, null, 2));
-  printMessage('Account file updated with new tokens.', 'success');
-}
-
-// Function to refresh the token and update the JSON file
-async function refreshTokenHandler(account, userName, accounts) {
-  printMessage(`Attempting to refresh token for ${userName}...`, 'info');
+// Function to make POST requests with the bearer token
+async function postRequest(payload, token) {
   try {
-    const response = await axios.post(REFRESH_URL, null, {
-      params: {
-        grant_type: 'refresh_token',
-        refresh_token: account.refreshToken
-      }
-    });
-
-    // Update tokens in the account object
-    account.authToken = `Bearer ${response.data.access_token}`;
-    account.refreshToken = response.data.refresh_token;
-
-    // Save the updated tokens to the JSON file
-    saveAccounts(accounts);
-
-    printMessage(`Token refreshed successfully for ${userName}`, 'success');
-    return true;
-  } catch (error) {
-    printMessage(`Failed to refresh token for ${userName}: ${error.message}`, 'error');
-    return false;
-  }
-}
-
-// Function to execute the get Hanafuda list action using axios
-async function getHanafudaList(account, userName, accounts) {
-  printMessage(`Fetching Hanafuda list for ${userName}...`, 'info');
-
-  try {
-    const response = await axios.post(REQUEST_URL, {
-      query: "query getHanafudaList($groups: [YakuGroup!]) {\n  getYakuListForCurrentUser(groups: $groups) {\n    cardId\n    group\n  }\n}",
-      variables: {},
-      operationName: "getHanafudaList"
-    }, {
+    const response = await axios.post(REQUEST_URL, payload, {
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': account.authToken,
-        'User-Agent': USER_AGENT
-      }
+        Authorization: token,
+        'User-Agent': USER_AGENT,
+      },
     });
-
-    const result = response.data;
-    if (!result.data || !result.data.getYakuListForCurrentUser) {
-      throw new Error('getYakuListForCurrentUser not found in response');
-    }
-
-    printMessage(`Fetch Hanafuda List Success for ${userName}`, 'success');
+    return response.data;
   } catch (error) {
-    printMessage(`Token Expired for ${userName}!`, 'error');
-
-    // Attempt to refresh the token and retry
-    const tokenRefreshed = await refreshTokenHandler(account, userName, accounts);
-    if (tokenRefreshed) {
-      return getHanafudaList(account, userName, accounts); // Retry with the new token
-    }
+    printMessage(`Request failed: ${error.message}`, 'error');
+    throw error;
   }
 }
 
-// Function to execute the draw action using axios
-async function drawHanafuda(account, userName, loopCount, accounts) {
-  for (let i = 1; i <= loopCount; i++) {
-    printMessage(`Executing draw action - Loop ${i} of ${loopCount} for ${userName}`, 'info');
-
-    try {
-      const response = await axios.post(REQUEST_URL, {
-        operationName: "executeGardenRewardAction",
-        query: "mutation executeGardenRewardAction($limit: Int!) {\n  executeGardenRewardAction(limit: $limit) {\n    data {\n      cardId\n      group\n    }\n    isNew\n  }\n}",
-        variables: { limit: 10 }
-      }, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': account.authToken,
-          'User-Agent': USER_AGENT
-        }
-      });
-
-      const result = response.data;
-      if (!result.data || !result.data.executeGardenRewardAction) {
-        throw new Error('executeGardenRewardAction not found in response');
-      }
-
-      printMessage(`Loop ${i} Success for ${userName}: Cards drawn`, 'success');
-      result.data.executeGardenRewardAction.forEach((cardInfo) => {
-        const card = cardInfo.data;
-        const isNewText = cardInfo.isNew ? " (New)" : " (Existing)";
-        console.log(`  Card ID: ${card.cardId}, Group: ${card.group}${isNewText}`);
-      });
-    } catch (error) {
-      printMessage(`Token Expired for ${userName} during loop ${i}!`, 'error');
-
-      // Attempt to refresh the token and retry
-      const tokenRefreshed = await refreshTokenHandler(account, userName, accounts);
-      if (tokenRefreshed) {
-        return drawHanafuda(account, userName, loopCount, accounts); // Retry with the new token
-      }
-    }
-  }
-}
-
-// Function to get garden details and determine loop count
-async function getGardenForCurrentUser(account, userName, accounts) {
-  printMessage(`Fetching garden details for ${userName}...`, 'info');
-
-  try {
-    const response = await axios.post(REQUEST_URL, {
-      query: "query GetGardenForCurrentUser {\n  getGardenForCurrentUser {\n    gardenStatus {\n      growActionCount\n      gardenRewardActionCount\n    }\n  }\n}",
-      operationName: "GetGardenForCurrentUser"
-    }, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': account.authToken,
-        'User-Agent': USER_AGENT
-      }
-    });
-
-    const result = response.data;
-    if (!result.data || !result.data.getGardenForCurrentUser) {
-      throw new Error('getGardenForCurrentUser not found in response');
-    }
-
-    const gardenInfo = result.data.getGardenForCurrentUser.gardenStatus;
-	let drawcount = floor(gardenInfo.gardenRewardActionCount/10);
-    printMessage(`Garden Details Fetch Success for ${userName}`, 'success');
-    console.log(`  Garden Reward Action Count: ${drawcount}`);
-
-    // Use gardenRewardActionCount as the loop count for drawing cards
-    await drawHanafuda(account, userName, drawcount, accounts);
-  } catch (error) {
-    printMessage(`Token Expired for ${userName}!`, 'error');
-
-    // Attempt to refresh the token and retry
-    const tokenRefreshed = await refreshTokenHandler(account, userName, accounts);
-    if (tokenRefreshed) {
-      return getGardenForCurrentUser(account, userName, accounts); // Retry with the new token
-    }
-  }
-}
-
-// Payload for fetching current user details
-const currentUserPayload = {
-  operationName: "CurrentUser",
-  query: `query CurrentUser {
-    currentUser {
-      id
-      sub
-      name
-      iconPath
-      depositCount
-      totalPoint
-      evmAddress {
-        userId
-        address
-      }
-      inviter {
+// Step 1: Get garden details
+async function getGardenDetails(token) {
+  const payload = {
+    query: `query GetGardenForCurrentUser {
+      getGardenForCurrentUser {
         id
-        name
+        gardenStatus {
+          gardenRewardActionCount
+        }
       }
-    }
-  }`
-};
+    }`,
+    operationName: 'GetGardenForCurrentUser',
+  };
 
-// Function to get and print the current user's name and validate inviterId
-async function getCurrentUserName(account, accounts) {
-  try {
-    printMessage('Fetching current user data...', 'info');
+  const data = await postRequest(payload, token);
+  const gardenRewardActionCount = Math.floor(data.data.getGardenForCurrentUser.gardenStatus.gardenRewardActionCount);
+  printMessage(`Garden Reward Action Count: ${gardenRewardActionCount}`, 'success');
+  return gardenRewardActionCount;
+}
 
-    const response = await axios.post(REQUEST_URL, currentUserPayload, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': account.authToken,
+// Step 2: Get Hanafuda list
+async function getHanafudaList(token) {
+  const payload = {
+    query: `query getHanafudaList($groups: [YakuGroup!]) {
+      getYakuListForCurrentUser(groups: $groups) {
+        cardId
+        group
       }
-    });
+    }`,
+    variables: {
+      groups: ['SPRING', 'SUMMER', 'AUTUMN', 'WINTER', 'SECRET'],
+    },
+    operationName: 'getHanafudaList',
+  };
 
-    const currentUser = response.data?.data?.currentUser;
-    const userName = currentUser?.name;
-    const inviterId = currentUser?.inviter?.id;
-
-    if (userName) {
-      printMessage(`Current User Name: ${userName}`, 'success');
-      return userName;
-    } else {
-      throw new Error('User name not found in response');
-    }
-  } catch (error) {
-    printMessage(`Error fetching current user data: ${error.message}`, 'error');
-
-    // Attempt to refresh the token and retry
-    const tokenRefreshed = await refreshTokenHandler(account, 'unknown user', accounts);
-    if (tokenRefreshed) {
-      return getCurrentUserName(account, accounts); // Retry with the refreshed token
-    }
-    return null;
-  }
+  const data = await postRequest(payload, token);
+  printMessage(`Successfully retrieved Hanafuda list.`, 'success');
+  return data.data.getYakuListForCurrentUser;
 }
-function printHeader() {
-  const line = "=".repeat(50);
-  const title = "Auto Draw Hanafuda";
-  const createdBy = "Bot created by: https://t.me/airdropwithmeh";
 
-  const totalWidth = 50;
-  const titlePadding = Math.floor((totalWidth - title.length) / 2);
-  const createdByPadding = Math.floor((totalWidth - createdBy.length) / 2);
+// Step 3: Execute garden reward action (draw)
+async function executeDraw(token, limit) {
+  const payload = {
+    query: `mutation executeGardenRewardAction($limit: Int!) {
+      executeGardenRewardAction(limit: $limit) {
+        data {
+          cardId
+          group
+        }
+        isNew
+      }
+    }`,
+    variables: { limit },
+    operationName: 'executeGardenRewardAction',
+  };
 
-  const centeredTitle = title.padStart(titlePadding + title.length).padEnd(totalWidth);
-  const centeredCreatedBy = createdBy.padStart(createdByPadding + createdBy.length).padEnd(totalWidth);
-
-  console.log(chalk.cyan.bold(line));
-  console.log(chalk.cyan.bold(centeredTitle));
-  console.log(chalk.green(centeredCreatedBy));
-  console.log(chalk.cyan.bold(line));
+  await postRequest(payload, token);
 }
-printHeader();
-// Main function to load accounts and execute actions
+
+// Main function to orchestrate the flow
 (async () => {
-  const accounts = loadAccounts();
-  const accountKeys = Object.keys(accounts);
+  try {
+    const accounts = loadAccounts();
+    const user = Object.values(accounts)[0]; // Assuming the first account in the JSON file
+    if (!user.authToken) {
+      throw new Error('authToken not found in account data.');
+    }
 
-  if (accountKeys.length === 0) {
-    printMessage('No accounts found in autogrows.json.', 'error');
-    return;
-  }
+    const token = user.authToken; // Extract the authToken
 
-  for (const accountKey of accountKeys) {
-    const account = accounts[accountKey];
+    // Step 1: Get garden details and calculate the number of draws
+    const gardenRewardActionCount = await getGardenDetails(token);
 
-    // Get the user's name to pass to other functions
-    const userName = await getCurrentUserName(account, accounts);
-    if (!userName) continue;
+    // Step 2: Get Hanafuda list
+    await getHanafudaList(token);
 
-    // Execute functions for each account
-    await getHanafudaList(account, userName, accounts);
-    await getGardenForCurrentUser(account, userName, accounts); // This will handle drawing with gardenRewardActionCount as the loop count
+    // Step 3: Execute draws in batches
+    const limit = 10; // Number of cards to draw per request
+    let remainingDraws = gardenRewardActionCount;
+    let processCount = 1;
+
+    printMessage(`Processing draw for ${gardenRewardActionCount} times.`, 'info');
+
+    while (remainingDraws > 0) {
+      const drawCount = Math.min(limit, remainingDraws);
+      await executeDraw(token, drawCount); // Execute draw silently
+      remainingDraws -= drawCount;
+      printMessage(`Executed draw for ${drawCount} cards. Draws Left: ${remainingDraws}`, 'info');
+      processCount++;
+    }
+
+    printMessage('All draws completed successfully!', 'success');
+  } catch (error) {
+    printMessage(`Error: ${error.message}`, 'error');
   }
 })();
