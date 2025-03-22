@@ -5,11 +5,11 @@ const fs = require('fs');
 const axios = require('axios');
 
 // Initialize web3 with the provided RPC URL
-const RPC_URL = "https://mainnet.base.org";
+const RPC_URL = "https://mainnet.optimism.io";
 const CONTRACT_ADDRESS = "0xC5bf05cD32a14BFfb705Fb37a9d218895187376c";
 
 // File to store tokens and auth data
-const TOKEN_FILE = './tokens.json';
+const TOKEN_FILE = './tokendeposit.json';
 
 // Constants
 const REQUEST_URL = 'https://hanafuda-backend-app-520478841386.us-central1.run.app/graphql';
@@ -116,7 +116,7 @@ async function syncTransaction(txHash) {
               syncEthereumTx(chainId: $chainId, txHash: $txHash)
             }`,
           variables: {
-            chainId: 8453,  // Adjust based on your specific chain ID
+            chainId: 10,  // Adjust based on your specific chain ID
             txHash: txHash
           },
           operationName: "SyncEthereumTx"
